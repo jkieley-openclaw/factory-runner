@@ -14,6 +14,7 @@ canvas { display: block; width: 100vw; height: 100vh; }
 #speed { position: absolute; top: 50px; left: 20px; color: #0af; font: 16px monospace; text-shadow: 0 0 8px #0af; }
 #lives { position: absolute; top: 20px; right: 20px; color: #f44; font: bold 24px monospace; text-shadow: 0 0 10px #f44; }
 #combo { position: absolute; top: 80px; left: 20px; color: #ff0; font: bold 20px monospace; text-shadow: 0 0 10px #ff0; opacity: 0; transition: opacity 0.3s; }
+#mute { position: absolute; bottom: 20px; right: 20px; color: #888; font: 28px monospace; pointer-events: all; cursor: pointer; z-index: 30; }
 #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.85); pointer-events: all; z-index: 20; }
 #overlay h1 { color: #0f0; font: bold 48px monospace; text-shadow: 0 0 20px #0f0; margin-bottom: 10px; }
 #overlay h2 { color: #0af; font: 24px monospace; margin-bottom: 30px; }
@@ -30,6 +31,7 @@ canvas { display: block; width: 100vw; height: 100vh; }
   <div id="speed">SPEED: 1.0x</div>
   <div id="lives">❤️❤️❤️</div>
   <div id="combo">COMBO x2!</div>
+  <div id="mute">🔊</div>
 </div>
 <div id="flash"></div>
 <div id="overlay">
@@ -46,11 +48,258 @@ canvas { display: block; width: 100vw; height: 100vh; }
 <script type="module">
 import * as THREE from 'three';
 
-// Game state
-let state = 'menu'; // menu, playing, dead
+// ═══════════════════════════════════════
+// PROCEDURAL SYNTH MUSIC (Web Audio API)
+// ═══════════════════════════════════════
+let audioCtx, musicGain, muted = false;
+const MUSIC_BPM = 140;
+const BEAT = 60 / MUSIC_BPM;
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  musicGain = audioCtx.createGain();
+  musicGain.gain.value = 0.35;
+  musicGain.connect(audioCtx.destination);
+  startMusic();
+}
+
+function playNote(freq, start, dur, type = 'square', vol = 0.15, dest = musicGain) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, start);
+  gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+  osc.connect(gain);
+  gain.connect(dest);
+  osc.start(start);
+  osc.stop(start + dur);
+}
+
+function playKick(start) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(150, start);
+  osc.frequency.exponentialRampToValueAtTime(30, start + 0.15);
+  gain.gain.setValueAtTime(0.6, start);
+  gain.gain.exponentialRampToValueAtTime(0.001, start + 0.2);
+  osc.connect(gain);
+  gain.connect(musicGain);
+  osc.start(start);
+  osc.stop(start + 0.2);
+}
+
+function playHihat(start, vol = 0.08) {
+  const bufferSize = audioCtx.sampleRate * 0.05;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const gain = audioCtx.createGain();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 8000;
+  gain.gain.setValueAtTime(vol, start);
+  gain.gain.exponentialRampToValueAtTime(0.001, start + 0.05);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(musicGain);
+  src.start(start);
+}
+
+function playSnare(start) {
+  // Noise
+  const bufferSize = audioCtx.sampleRate * 0.12;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const nGain = audioCtx.createGain();
+  nGain.gain.setValueAtTime(0.25, start);
+  nGain.gain.exponentialRampToValueAtTime(0.001, start + 0.12);
+  src.connect(nGain);
+  nGain.connect(musicGain);
+  src.start(start);
+  // Tone
+  const osc = audioCtx.createOscillator();
+  const oGain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.value = 180;
+  oGain.gain.setValueAtTime(0.3, start);
+  oGain.gain.exponentialRampToValueAtTime(0.001, start + 0.08);
+  osc.connect(oGain);
+  oGain.connect(musicGain);
+  osc.start(start);
+  osc.stop(start + 0.08);
+}
+
+// Bass line (minor key, techy)
+const BASS_NOTES = [55, 55, 65.41, 73.42, 55, 55, 82.41, 73.42]; // Am progression
+const MELODY_PATTERNS = [
+  [440, 523, 659, 587, 523, 440, 392, 440],
+  [523, 659, 784, 659, 587, 523, 440, 523],
+  [392, 440, 523, 587, 523, 440, 392, 349],
+  [659, 587, 523, 440, 523, 587, 659, 784],
+];
+const ARP_NOTES = [220, 262, 330, 392, 440, 392, 330, 262];
+
+let loopHandle = null;
+function scheduleBar(barStart, barNum) {
+  const pattern = barNum % 4;
+  for (let i = 0; i < 8; i++) {
+    const t = barStart + i * BEAT * 0.5;
+    // Drums
+    if (i % 2 === 0) playKick(t);
+    if (i % 4 === 2) playSnare(t);
+    playHihat(t, i % 2 === 0 ? 0.1 : 0.05);
+    // Bass
+    playNote(BASS_NOTES[i], t, BEAT * 0.45, 'sawtooth', 0.12);
+    // Arpeggio (16ths)
+    if (barNum >= 2) {
+      playNote(ARP_NOTES[i] * (pattern < 2 ? 1 : 1.5), t, BEAT * 0.2, 'square', 0.04);
+      playNote(ARP_NOTES[(i + 4) % 8] * 2, t + BEAT * 0.25, BEAT * 0.15, 'square', 0.03);
+    }
+    // Melody (every other bar)
+    if (barNum >= 1 && barNum % 2 === 0) {
+      const mel = MELODY_PATTERNS[pattern];
+      playNote(mel[i], t, BEAT * 0.4, 'triangle', 0.06);
+    }
+  }
+}
+
+function startMusic() {
+  let barNum = 0;
+  let nextBarTime = audioCtx.currentTime + 0.1;
+  function loop() {
+    while (nextBarTime < audioCtx.currentTime + 0.5) {
+      scheduleBar(nextBarTime, barNum);
+      nextBarTime += BEAT * 4;
+      barNum++;
+    }
+    loopHandle = requestAnimationFrame(loop);
+  }
+  loop();
+}
+
+function stopMusic() {
+  if (loopHandle) cancelAnimationFrame(loopHandle);
+  loopHandle = null;
+}
+
+// SFX
+function playSfx(type) {
+  if (!audioCtx || muted) return;
+  const now = audioCtx.currentTime;
+  if (type === 'pickup') {
+    playNote(880, now, 0.1, 'sine', 0.15, audioCtx.destination);
+    playNote(1320, now + 0.05, 0.1, 'sine', 0.12, audioCtx.destination);
+    playNote(1760, now + 0.1, 0.15, 'sine', 0.08, audioCtx.destination);
+  } else if (type === 'hit') {
+    const bufSize = audioCtx.sampleRate * 0.2;
+    const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.4, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    src.start(now);
+    // Low thud
+    const osc = audioCtx.createOscillator();
+    const og = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(200, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.15);
+    og.gain.setValueAtTime(0.5, now);
+    og.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(og);
+    og.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  } else if (type === 'death') {
+    for (let i = 0; i < 5; i++) {
+      playNote(300 - i * 40, now + i * 0.08, 0.15, 'sawtooth', 0.12, audioCtx.destination);
+    }
+  }
+}
+
+// Mute button
+document.getElementById('mute').addEventListener('click', () => {
+  muted = !muted;
+  document.getElementById('mute').textContent = muted ? '🔇' : '🔊';
+  if (musicGain) musicGain.gain.value = muted ? 0 : 0.35;
+});
+
+// ═══════════════════════════════════════
+// NEWS HEADLINES (scrolling in the sky)
+// ═══════════════════════════════════════
+const HEADLINES = [
+  "⚡ NVIDIA CRUSHES Q4: $68.1B REVENUE, BEATS BY $2B — STOCK FLAT AFTER HOURS",
+  "📉 S&P SOFTWARE INDEX DOWN 23% YTD ON AI DISRUPTION FEARS",
+  "🏛️ SCOTUS STRIKES DOWN TRUMP TARIFFS 6-3 — REIMPOSED AT 15% UNDER SECTION 122",
+  "🤖 META-AMD SIGN LARGEST SEMICONDUCTOR DEAL EVER: $100B+ FOR AI CHIPS",
+  "₿ BITCOIN BOUNCES FROM $62.5K — STRONGEST ETF INFLOWS IN WEEKS",
+  "🎮 NVIDIA RE-ENTERING CONSUMER PC MARKET WITH AI LAPTOP CHIPS",
+  "🇮🇷 US-IRAN NUCLEAR TALKS RESUME IN GENEVA — OIL PRICES VOLATILE",
+  "🚀 JENSEN HUANG: 'THE MARKETS GOT IT WRONG ON SOFTWARE DISRUPTION'",
+  "⚖️ PENTAGON GIVES ANTHROPIC FRIDAY ULTIMATUM ON MILITARY AI ACCESS",
+  "📊 CONSUMER CONFIDENCE 91.2 — BEATS ESTIMATES BUT BELOW 2024 PEAK",
+  "🏭 SATISFACTORY UPDATE 9: PIPES STILL BROKEN, DEVS SAY 'WORKING AS INTENDED'",
+  "💰 STRIPE REPORTEDLY IN EARLY TALKS TO ACQUIRE PAYPAL",
+  "📈 SHOPIFY RECOVERING: $2B BUYBACK ACTIVE, MULTIPLE ANALYST UPGRADES",
+  "🌍 AMERICANS LEAVING US IN RECORD NUMBERS — NEGATIVE NET MIGRATION",
+  "🔬 TSMC HITS RECORD HIGHS — $56B COMMITTED TO AI CHIP MANUFACTURING",
+];
+
+let newsSprites = [];
+let headlineFont;
+
+function createTextTexture(text, fontSize = 48) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = `bold ${fontSize}px monospace`;
+  const metrics = ctx.measureText(text);
+  canvas.width = Math.ceil(metrics.width) + 20;
+  canvas.height = fontSize * 1.4;
+  ctx.font = `bold ${fontSize}px monospace`;
+  ctx.fillStyle = '#00ff88';
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 8;
+  ctx.fillText(text, 10, fontSize);
+  return canvas;
+}
+
+function spawnHeadline(z) {
+  const text = HEADLINES[Math.floor(Math.random() * HEADLINES.length)];
+  const canvas = createTextTexture(text, 36);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const aspect = canvas.width / canvas.height;
+  const height = 1.2;
+  const width = height * aspect;
+  const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.7 });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(width, height, 1);
+  // Position on ceiling, slightly random x
+  sprite.position.set((Math.random() - 0.5) * 4, 4.2, z);
+  sprite.userData.scrollSpeed = 0.5 + Math.random() * 0.3;
+  scene.add(sprite);
+  newsSprites.push(sprite);
+}
+
+// ═══════════════════════════════════════
+// GAME STATE
+// ═══════════════════════════════════════
+let state = 'menu';
 let score = 0, lives = 3, combo = 0, comboTimer = 0;
 let speed = 8, baseSpeed = 8, maxSpeed = 25;
-let playerLane = 1; // 0=left, 1=center, 2=right
+let playerLane = 1;
 let targetX = 0;
 let obstacles = [], pickups = [], particles = [];
 let groundTiles = [];
@@ -110,19 +359,16 @@ const beltMat = new THREE.MeshStandardMaterial({ color: 0x333344, roughness: 0.5
 
 // Player
 const playerGroup = new THREE.Group();
-// Body
 const bodyGeo = new THREE.BoxGeometry(1.2, 1.8, 1.2);
 const body = new THREE.Mesh(bodyGeo, playerMat);
 body.position.y = 1;
 body.castShadow = true;
 playerGroup.add(body);
-// Visor
 const visorGeo = new THREE.BoxGeometry(1.0, 0.4, 0.3);
-const visorMat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 0.8, roughness: 0.1, metalness: 1 });
-const visor = new THREE.Mesh(visorGeo, visorMat);
+const visorMatl = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 0.8, roughness: 0.1, metalness: 1 });
+const visor = new THREE.Mesh(visorGeo, visorMatl);
 visor.position.set(0, 1.5, -0.5);
 playerGroup.add(visor);
-// Jetpack
 const jetGeo = new THREE.BoxGeometry(0.6, 0.8, 0.4);
 const jet = new THREE.Mesh(jetGeo, pipeMat);
 jet.position.set(0, 1, 0.7);
@@ -132,17 +378,14 @@ scene.add(playerGroup);
 // Ground + walls
 function createGround(z) {
   const group = new THREE.Group();
-  // Floor
   const floor = new THREE.Mesh(new THREE.BoxGeometry(12, 0.5, 40), groundMat);
   floor.position.y = -0.25;
   floor.receiveShadow = true;
   group.add(floor);
-  // Conveyor belt lines
   for (let lane of LANES) {
     const belt = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.05, 40), beltMat);
     belt.position.set(lane, 0.01, 0);
     group.add(belt);
-    // Belt arrows
     for (let bz = -18; bz < 18; bz += 4) {
       const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.8, 4), new THREE.MeshStandardMaterial({ color: 0x556677, emissive: 0x223344, emissiveIntensity: 0.3 }));
       arrow.rotation.x = Math.PI / 2;
@@ -150,24 +393,20 @@ function createGround(z) {
       group.add(arrow);
     }
   }
-  // Walls
   for (let side of [-7.5, 7.5]) {
     const wall = new THREE.Mesh(new THREE.BoxGeometry(1, 4, 40), wallMat);
     wall.position.set(side, 2, 0);
     group.add(wall);
-    // Pipes on walls
     for (let pz = -15; pz < 15; pz += 8) {
       const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3, 8), pipeMat);
       pipe.position.set(side + (side > 0 ? -0.6 : 0.6), 3, pz);
       group.add(pipe);
     }
   }
-  // Ceiling beams
   for (let bz = -18; bz < 18; bz += 6) {
     const beam = new THREE.Mesh(new THREE.BoxGeometry(15, 0.3, 0.3), wallMat);
     beam.position.set(0, 4.5, bz);
     group.add(beam);
-    // Hanging light
     const light = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.5), new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffffaa, emissiveIntensity: 1 }));
     light.position.set(0, 4.3, bz);
     group.add(light);
@@ -181,16 +420,14 @@ for (let i = 0; i < 4; i++) {
   groundTiles.push(createGround(-i * 40));
 }
 
-// Obstacle types
+// Obstacles
 function createObstacle(lane, z) {
   const type = Math.random();
   let mesh;
   if (type < 0.4) {
-    // Crate
     mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), obstacleMat);
     mesh.position.y = 1;
   } else if (type < 0.7) {
-    // Pipe barrier
     const g = new THREE.Group();
     const pipe1 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 2.8, 8), obstacleMat);
     pipe1.position.set(-1, 1.5, 0);
@@ -204,7 +441,6 @@ function createObstacle(lane, z) {
     g.add(bar);
     mesh = g;
   } else {
-    // Machine block
     const g = new THREE.Group();
     const base = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.5, 1.5), obstacleMat);
     base.position.y = 0.75;
@@ -236,21 +472,15 @@ function spawnParticles(pos, color, count = 10) {
     const mat = new THREE.MeshBasicMaterial({ color });
     const p = new THREE.Mesh(geo, mat);
     p.position.copy(pos);
-    p.userData.vel = new THREE.Vector3(
-      (Math.random() - 0.5) * 8,
-      Math.random() * 6 + 2,
-      (Math.random() - 0.5) * 4
-    );
+    p.userData.vel = new THREE.Vector3((Math.random()-0.5)*8, Math.random()*6+2, (Math.random()-0.5)*4);
     p.userData.life = 1;
     scene.add(p);
     particles.push(p);
   }
 }
 
-// Spawn logic
 let nextSpawnZ = -30;
 function spawnRow(z) {
-  // 1-2 obstacles per row, with at least one lane open
   const blocked = new Set();
   const numObs = Math.random() < 0.3 ? 2 : 1;
   for (let i = 0; i < numObs; i++) {
@@ -259,7 +489,6 @@ function spawnRow(z) {
     blocked.add(lane);
     obstacles.push(createObstacle(lane, z));
   }
-  // Pickups in open lanes
   for (let l = 0; l < 3; l++) {
     if (!blocked.has(l) && Math.random() < 0.5) {
       pickups.push(createPickup(l, z));
@@ -268,11 +497,11 @@ function spawnRow(z) {
 }
 
 function initGame() {
-  // Clear
   obstacles.forEach(o => scene.remove(o));
   pickups.forEach(p => scene.remove(p));
   particles.forEach(p => scene.remove(p));
-  obstacles = []; pickups = []; particles = [];
+  newsSprites.forEach(s => scene.remove(s));
+  obstacles = []; pickups = []; particles = []; newsSprites = [];
   score = 0; lives = 3; combo = 0; speed = baseSpeed;
   playerLane = 1; targetX = 0;
   playerGroup.position.set(0, 0, 0);
@@ -280,6 +509,10 @@ function initGame() {
   for (let z = -30; z > -120; z -= 12 + Math.random() * 6) {
     spawnRow(z);
     nextSpawnZ = z - 12;
+  }
+  // Seed some headlines
+  for (let z = -20; z > -100; z -= 25) {
+    spawnHeadline(z);
   }
   updateUI();
 }
@@ -315,10 +548,13 @@ document.addEventListener('keydown', e => {
   if ((e.key === 'ArrowRight' || e.key === 'd') && playerLane < 2) { playerLane++; targetX = LANES[playerLane]; }
 });
 
-// Start button
+// Start
 document.getElementById('startBtn').addEventListener('click', () => {
   state = 'playing';
   document.getElementById('overlay').classList.add('hidden');
+  if (!audioCtx) initAudio();
+  else if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (!loopHandle) startMusic();
   initGame();
 });
 
@@ -326,26 +562,25 @@ document.getElementById('startBtn').addEventListener('click', () => {
 function checkCollisions() {
   const px = playerGroup.position.x;
   const pz = playerGroup.position.z;
-  
   for (let i = obstacles.length - 1; i >= 0; i--) {
     const o = obstacles[i];
     const dx = Math.abs(px - o.position.x);
     const dz = Math.abs(pz - o.position.z);
     if (dx < 1.3 && dz < 1.3) {
-      // Hit!
       lives--;
       combo = 0;
       spawnParticles(o.position, 0xff3333, 15);
       scene.remove(o);
       obstacles.splice(i, 1);
-      // Flash
+      playSfx('hit');
       const flash = document.getElementById('flash');
       flash.style.opacity = '0.5';
       setTimeout(() => flash.style.opacity = '0', 150);
-      // Vibrate
       if (navigator.vibrate) navigator.vibrate(100);
       if (lives <= 0) {
         state = 'dead';
+        playSfx('death');
+        stopMusic();
         const ov = document.getElementById('overlay');
         ov.querySelector('h1').textContent = '💥 GAME OVER';
         ov.querySelector('h2').textContent = `Parts collected: ${score}`;
@@ -356,7 +591,6 @@ function checkCollisions() {
       return;
     }
   }
-  
   for (let i = pickups.length - 1; i >= 0; i--) {
     const p = pickups[i];
     const dx = Math.abs(px - p.position.x);
@@ -370,6 +604,7 @@ function checkCollisions() {
       spawnParticles(p.position, 0x00ff88, 8);
       scene.remove(p);
       pickups.splice(i, 1);
+      playSfx('pickup');
       if (combo > 1) {
         const comboEl = document.getElementById('combo');
         comboEl.textContent = `COMBO x${combo}! +${points}`;
@@ -382,38 +617,48 @@ function checkCollisions() {
 
 // Game loop
 const clock = new THREE.Clock();
+let newsSpawnZ = -100;
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   frameCount++;
-  
+
   if (state === 'playing') {
-    // Move player laterally
     playerGroup.position.x += (targetX - playerGroup.position.x) * 12 * dt;
-    
-    // Bob animation
     body.position.y = 1 + Math.sin(frameCount * 0.15) * 0.1;
-    visor.material.emissiveIntensity = 0.6 + Math.sin(frameCount * 0.1) * 0.3;
-    
-    // Move world toward player
+    visorMatl.emissiveIntensity = 0.6 + Math.sin(frameCount * 0.1) * 0.3;
+
     const moveZ = speed * dt;
-    
+
     obstacles.forEach(o => o.position.z += moveZ);
     pickups.forEach(p => {
       p.position.z += moveZ;
       p.rotation.y += 3 * dt;
       p.position.y = 1.5 + Math.sin(frameCount * 0.08 + p.position.x) * 0.3;
     });
-    
-    // Ground tiles
+
+    // News headlines scroll with world + slight drift
+    newsSprites.forEach(s => {
+      s.position.z += moveZ;
+      s.position.x += s.userData.scrollSpeed * dt;
+    });
+    // Remove passed headlines, spawn new ones
+    newsSprites = newsSprites.filter(s => {
+      if (s.position.z > 20) { scene.remove(s); return false; }
+      return true;
+    });
+    // Spawn new headlines ahead
+    const farthestNews = newsSprites.length ? Math.min(...newsSprites.map(s => s.position.z)) : 0;
+    if (farthestNews > -60) {
+      spawnHeadline(farthestNews - 20 - Math.random() * 15);
+    }
+
     groundTiles.forEach(g => {
       g.position.z += moveZ;
-      if (g.position.z > 40) {
-        g.position.z -= 160;
-      }
+      if (g.position.z > 40) g.position.z -= 160;
     });
-    
-    // Remove passed objects, spawn new
+
     obstacles = obstacles.filter(o => {
       if (o.position.z > 15) { scene.remove(o); return false; }
       return true;
@@ -422,18 +667,16 @@ function animate() {
       if (p.position.z > 15) { scene.remove(p); return false; }
       return true;
     });
-    
-    // Spawn
+
     const farthest = obstacles.length ? Math.min(...obstacles.map(o => o.position.z)) : 0;
     if (farthest > -80) {
       const gap = 10 + Math.random() * (Math.max(3, 10 - speed * 0.3));
       nextSpawnZ = farthest - gap;
       spawnRow(nextSpawnZ);
     }
-    
+
     checkCollisions();
-    
-    // Combo decay
+
     if (comboTimer > 0) {
       comboTimer--;
       if (comboTimer === 0) {
@@ -441,12 +684,11 @@ function animate() {
         document.getElementById('combo').style.opacity = '0';
       }
     }
-    
-    // Player light
+
     playerLight.position.set(playerGroup.position.x, 3, 2);
     playerLight.intensity = 1.5 + Math.sin(frameCount * 0.05) * 0.5;
   }
-  
+
   // Particles
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
@@ -460,18 +702,16 @@ function animate() {
       particles.splice(i, 1);
     }
   }
-  
-  // Camera follow
+
   if (state === 'playing') {
     camera.position.x += (playerGroup.position.x * 0.3 - camera.position.x) * 3 * dt;
   }
-  
+
   renderer.render(scene, camera);
 }
 
 animate();
 
-// Resize
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
